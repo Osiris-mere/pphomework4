@@ -30,7 +30,7 @@ def function_hw5(input_image):
 
 
 def _as_uint8(image):
-    """将 Gradio 图像转换为 uint8，并保留灰度/RGB/RGBA 通道结构。"""
+    """将 Gradio 图像转换为 uint8，并保留灰度/RGB/RGBA 通道结构���"""
     array = np.asarray(image)
     if array.dtype != np.uint8:
         array = np.clip(array, 0, 255).astype(np.uint8)
@@ -195,13 +195,13 @@ def _bm3d_stage(noisy, guide, sigma, basic=None, block=8,
         padded_basic = cv2.copyMakeBorder(basic, margin, margin, margin, margin,
                                           cv2.BORDER_REFLECT)
 
-    reference = guide
-    padded_guide = cv2.copyMakeBorder(reference, margin, margin, margin, margin,
+    padded_guide = cv2.copyMakeBorder(guide, margin, margin, margin, margin,
                                       cv2.BORDER_REFLECT)
     accum = np.zeros_like(padded_noisy, dtype=np.float32)
     weights = np.zeros(padded_noisy.shape[:2], dtype=np.float32)
-    dct = _dct_matrix(max_group)
     sigma = max(float(sigma), 1e-6)
+
+    dct_cache = {}
 
     for y in range(0, h, step):
         for x in range(0, w, step):
@@ -235,6 +235,11 @@ def _bm3d_stage(noisy, guide, sigma, basic=None, block=8,
                 continue
 
             count = len(locations)
+            if count not in dct_cache:
+                dct_cache[count] = _dct_matrix(count)
+            dct = dct_cache[count]
+
+            group_weight = 0.0
             for channel in range(channels):
                 group = np.empty((count, block, block), dtype=np.float32)
                 basic_group = None
@@ -242,13 +247,17 @@ def _bm3d_stage(noisy, guide, sigma, basic=None, block=8,
                     basic_group = np.empty_like(group)
 
                 for index, (gy, gx) in enumerate(locations):
-                    group[index] = cv2.dct(
-                        padded_noisy[gy:gy + block, gx:gx + block, channel])
+                    patch = padded_noisy[gy:gy + block, gx:gx + block, channel]
+                    group[index] = cv2.dct(patch.astype(np.float32))
                     if basic_group is not None:
+                        basic_patch = padded_basic[gy:gy + block,
+                                                   gx:gx + block,
+                                                   channel]
                         basic_group[index] = cv2.dct(
-                            padded_basic[gy:gy + block, gx:gx + block, channel])
+                            basic_patch.astype(np.float32)
+                        )
 
-                g = dct[:count, :count] @ group.reshape(count, -1)
+                g = dct @ group.reshape(count, block * block)
                 g = g.reshape(count, block, block)
 
                 if basic_group is None:
@@ -257,24 +266,30 @@ def _bm3d_stage(noisy, guide, sigma, basic=None, block=8,
                     nz = max(1, int(np.count_nonzero(filtered)))
                     aggregation_weight = 1.0 / (sigma * sigma * nz)
                 else:
-                    bg = dct[:count, :count] @ basic_group.reshape(count, -1)
+                    bg = dct @ basic_group.reshape(count, block * block)
                     bg = bg.reshape(count, block, block)
-                    gain = bg * bg / (bg * bg + sigma * sigma)
+                    gain = bg * bg / np.maximum(bg * bg + sigma * sigma,
+                                                1e-12)
                     filtered = g * gain
                     aggregation_weight = 1.0 / max(
-                        sigma * sigma * float(np.sum(gain * gain)), 1e-8)
+                        sigma * sigma * float(np.sum(gain * gain)), 1e-12
+                    )
 
-                restored = dct[:count, :count].T @ filtered.reshape(count, -1)
+                restored = dct.T @ filtered.reshape(count, block * block)
                 restored = restored.reshape(count, block, block)
+
                 for index, (gy, gx) in enumerate(locations):
                     patch = cv2.idct(restored[index])
                     accum[gy:gy + block, gx:gx + block, channel] += aggregation_weight * patch
 
+                group_weight = aggregation_weight
+
             for gy, gx in locations:
-                weights[gy:gy + block, gx:gx + block] += aggregation_weight
+                weights[gy:gy + block, gx:gx + block] += group_weight
 
     safe_weights = np.maximum(weights, 1e-12)
     result = accum / safe_weights[:, :, None]
+    result = np.nan_to_num(result, nan=0.0, posinf=255.0, neginf=0.0)
     return result[margin:margin + h, margin:margin + w]
 
 
@@ -282,13 +297,14 @@ def _bm3d_manual(image, sigma=25):
     """手动 BM3D：第一阶段硬阈值，第二阶段 Wiener 滤波。"""
     gray = image.ndim == 2
     rgb = image[:, :, None] if gray else image[:, :, :3]
-    work_rgb = rgb.astype(np.float32)
+    work_rgb = np.clip(rgb.astype(np.float32), 0, 255)
 
     if gray:
         work = work_rgb
         guide = work_rgb[:, :, 0]
     else:
-        work = cv2.cvtColor(work_rgb, cv2.COLOR_RGB2YCrCb)
+        work = cv2.cvtColor(work_rgb.astype(np.uint8),
+                            cv2.COLOR_RGB2YCrCb).astype(np.float32)
         guide = work[:, :, 0]
 
     basic = _bm3d_stage(work, guide, sigma, basic=None,
@@ -296,10 +312,16 @@ def _bm3d_manual(image, sigma=25):
     denoised = _bm3d_stage(work, guide, sigma, basic=basic,
                            block=8, search=8, step=6, max_group=8)
 
+    denoised = np.nan_to_num(denoised, nan=0.0,
+                             posinf=255.0, neginf=0.0)
+
     if gray:
         result = denoised[:, :, 0]
     else:
-        result = cv2.cvtColor(denoised, cv2.COLOR_YCrCb2RGB)
+        result = cv2.cvtColor(
+            np.clip(denoised, 0, 255).astype(np.uint8),
+            cv2.COLOR_YCrCb2RGB
+        )
     return np.clip(result, 0, 255).astype(np.uint8)
 
 
