@@ -30,7 +30,7 @@ def function_hw5(input_image):
 
 
 def _as_uint8(image):
-    """将 Gradio 图像转换为 uint8，并保留灰度/RGB/RGBA 通道结构���"""
+    """将 Gradio 图像转换为 uint8，并保留灰度/RGB/RGBA 通道结构。"""
     array = np.asarray(image)
     if array.dtype != np.uint8:
         array = np.clip(array, 0, 255).astype(np.uint8)
@@ -153,7 +153,7 @@ def _fast_guided_filter_manual(image, radius=8, eps=1e-3, subsampling=4):
         mean_p = _box_mean_integral(p, small_radius)
         cov_ip = _box_mean_integral(small_i * p, small_radius) - mean_i * mean_p
         a = cov_ip / (var_i + eps)
-        b = mean_p - a * mean_i
+        b = mean_p - a * small_i
         mean_a = cv2.resize(_box_mean_integral(a, small_radius),
                             (w, h), interpolation=cv2.INTER_LINEAR)
         mean_b = cv2.resize(_box_mean_integral(b, small_radius),
@@ -198,23 +198,27 @@ def _bm3d_stage(noisy, guide, sigma, basic=None, block=8,
     padded_guide = cv2.copyMakeBorder(guide, margin, margin, margin, margin,
                                       cv2.BORDER_REFLECT)
     accum = np.zeros_like(padded_noisy, dtype=np.float32)
-    weights = np.zeros(padded_noisy.shape[:2], dtype=np.float32)
+    # Each color plane has its own Wiener/threshold aggregation weight.
+    weights = np.zeros_like(padded_noisy, dtype=np.float32)
     sigma = max(float(sigma), 1e-6)
+    step = max(1, int(step))
+    block = max(1, int(block))
+    search = max(0, int(search))
+    max_group = max(1, int(max_group))
+
+    # The second-stage estimate is already in YCrCb, so its Y plane is the
+    # correct matching guide. Convert/select it once, not once per reference
+    # block (which previously made processing large images needlessly slow).
+    if padded_basic is not None:
+        match_reference = (padded_basic[:, :, 0] if padded_basic.shape[2] == 3
+                           else padded_basic[:, :, 0])
+    else:
+        match_reference = padded_guide
 
     dct_cache = {}
-
     for y in range(0, h, step):
         for x in range(0, w, step):
             py, px = y + margin, x + margin
-            if padded_basic is not None:
-                if padded_basic.shape[2] == 3:
-                    match_reference = cv2.cvtColor(padded_basic,
-                                                   cv2.COLOR_RGB2GRAY)
-                else:
-                    match_reference = padded_basic[:, :, 0]
-            else:
-                match_reference = padded_guide
-
             ref_patch = match_reference[py:py + block, px:px + block]
             candidates = []
             for dy in range(-search, search + 1, 2):
@@ -239,7 +243,6 @@ def _bm3d_stage(noisy, guide, sigma, basic=None, block=8,
                 dct_cache[count] = _dct_matrix(count)
             dct = dct_cache[count]
 
-            group_weight = 0.0
             for channel in range(channels):
                 group = np.empty((count, block, block), dtype=np.float32)
                 basic_group = None
@@ -251,44 +254,39 @@ def _bm3d_stage(noisy, guide, sigma, basic=None, block=8,
                     group[index] = cv2.dct(patch.astype(np.float32))
                     if basic_group is not None:
                         basic_patch = padded_basic[gy:gy + block,
-                                                   gx:gx + block,
-                                                   channel]
-                        basic_group[index] = cv2.dct(
-                            basic_patch.astype(np.float32)
-                        )
+                                                   gx:gx + block, channel]
+                        basic_group[index] = cv2.dct(basic_patch.astype(np.float32))
 
-                g = dct @ group.reshape(count, block * block)
-                g = g.reshape(count, block, block)
+                # The per-patch 2-D DCT has already been applied above; this
+                # orthonormal DCT applies the third transform along the group.
+                transformed = dct @ group.reshape(count, block * block)
+                transformed = transformed.reshape(count, block, block)
 
                 if basic_group is None:
                     threshold = 2.7 * sigma
-                    filtered = g * (np.abs(g) >= threshold)
-                    nz = max(1, int(np.count_nonzero(filtered)))
-                    aggregation_weight = 1.0 / (sigma * sigma * nz)
+                    filtered = transformed * (np.abs(transformed) >= threshold)
+                    nonzero = max(1, int(np.count_nonzero(filtered)))
+                    aggregation_weight = 1.0 / (sigma * sigma * nonzero)
                 else:
-                    bg = dct @ basic_group.reshape(count, block * block)
-                    bg = bg.reshape(count, block, block)
-                    gain = bg * bg / np.maximum(bg * bg + sigma * sigma,
-                                                1e-12)
-                    filtered = g * gain
+                    basic_transformed = dct @ basic_group.reshape(count, block * block)
+                    basic_transformed = basic_transformed.reshape(count, block, block)
+                    power = basic_transformed * basic_transformed
+                    gain = power / np.maximum(power + sigma * sigma, 1e-12)
+                    filtered = transformed * gain
                     aggregation_weight = 1.0 / max(
                         sigma * sigma * float(np.sum(gain * gain)), 1e-12
                     )
 
                 restored = dct.T @ filtered.reshape(count, block * block)
                 restored = restored.reshape(count, block, block)
-
                 for index, (gy, gx) in enumerate(locations):
                     patch = cv2.idct(restored[index])
-                    accum[gy:gy + block, gx:gx + block, channel] += aggregation_weight * patch
+                    accum[gy:gy + block, gx:gx + block, channel] += (
+                        aggregation_weight * patch
+                    )
+                    weights[gy:gy + block, gx:gx + block, channel] += aggregation_weight
 
-                group_weight = aggregation_weight
-
-            for gy, gx in locations:
-                weights[gy:gy + block, gx:gx + block] += group_weight
-
-    safe_weights = np.maximum(weights, 1e-12)
-    result = accum / safe_weights[:, :, None]
+    result = accum / np.maximum(weights, 1e-12)
     result = np.nan_to_num(result, nan=0.0, posinf=255.0, neginf=0.0)
     return result[margin:margin + h, margin:margin + w]
 
