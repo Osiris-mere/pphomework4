@@ -74,24 +74,26 @@ def create_demo_hw4(process):
     with gr.Blocks() as demo:
         gr.Markdown("## 作业四：图像去噪与锐化效果比较")
         gr.Markdown(
-            "支持 OpenCV 双边滤波、OpenCV 彩色 NLM（fastNlMeansDenoisingColored），"
-            "以及手动实现的双边滤波和导向滤波。可选择并排比较两种滤波结果用于细节锐化的效果。"
+            "包含 OpenCV 双边滤波和彩色 NLM 基线、手动双边滤波/导向滤波、"
+            "积分图盒式滤波优化的快速导向滤波，以及手动两阶段 BM3D。"
+            "创意模式将快速导向滤波与反遮罩细节增强组合。"
         )
         with gr.Row():
             with gr.Column():
                 input_image = gr.Image(sources=["upload", "webcam", "clipboard"], type="numpy", label="输入图像")
                 method = gr.Dropdown(
                     choices=["双边滤波（OpenCV）", "NLM 去噪（OpenCV）", "手动双边滤波",
-                             "手动导向滤波", "锐化效果对比（双边 vs 导向）"],
+                             "手动导向滤波", "快速导向滤波（盒式滤波优化）", "BM3D（手动实现）",
+                             "锐化效果对比（双边 vs 导向）", "创意：快速导向去噪 + 细节增强"],
                     value="双边滤波（OpenCV）", label="处理方法")
-                strength = gr.Slider(1, 100, value=35, step=1, label="滤波强度 / NLM h")
+                strength = gr.Slider(1, 100, value=25, step=1, label="滤波强度 / NLM h / BM3D 噪声标准差")
                 spatial = gr.Slider(1, 15, value=3, step=1, label="空间邻域半径（双边滤波）")
-                radius = gr.Slider(1, 30, value=5, step=1, label="导向滤波半径")
+                radius = gr.Slider(1, 30, value=8, step=1, label="导向滤波半径")
                 epsilon = gr.Slider(0.0001, 0.1, value=0.01, step=0.0001, label="导向滤波正则化参数 ε")
                 sharpen_amount = gr.Slider(0, 3, value=1, step=0.1, label="细节锐化强度")
                 run_button = gr.Button("开始处理", variant="primary")
             with gr.Column():
-                output_image = gr.Image(type="numpy", label="处理结果（锐化对比模式下：左为双边滤波，右为导向滤波）",
+                output_image = gr.Image(type="numpy", label="输出结果（锐化对比模式：左为双边滤波，右为导向滤波）",
                                         interactive=False)
         run_button.click(fn=process,
                          inputs=[input_image, method, strength, spatial, radius, epsilon, sharpen_amount],
