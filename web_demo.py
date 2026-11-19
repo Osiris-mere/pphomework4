@@ -16,14 +16,15 @@ HTML_DESCRIPTION = """
 """
 
 MD_DESCRIPTION = """
-## 此网页演示提供以下图像处理工具
-- 作业1：图像色相/饱和度/亮度/对比度调整工具
-- 作业2：基于 GAN 的图像生成编辑工具
-- 作业3：替换屏幕内容工具
-- 作业4：图像去噪与锐化效果比较（OpenCV 双边滤波、NLM、手动双边滤波和导向滤波）
-- 作业5：图像提亮工具
+## 作业四：进阶去噪与锐化
 
-作业4支持 OpenCV `bilateralFilter` 与 `fastNlMeansDenoisingColored`，并提供手动实现的双边滤波和导向滤波，可并排观察两种滤波结果用于细节锐化的差异。
+- 手动双边滤波
+- 手动导向滤波及双边/导向锐化对比
+- 积分图盒式滤波优化的快速导向滤波
+- 手动 BM3D（硬阈值与 Wiener 两阶段）
+- 创意：快速导向去噪 + 可调细节增强
+
+本版本只保留要求2与进阶功能，不使用要求1中的 OpenCV 快捷滤波函数。
 """
 
 
@@ -38,7 +39,7 @@ def main():
                 create_demo_hw2(function_hw2)
             with gr.TabItem("作业3：替换屏幕内容工具"):
                 create_demo_hw3(function_hw3)
-            with gr.TabItem("作业4：图像去噪与锐化效果比较"):
+            with gr.TabItem("作业4：进阶去噪与锐化"):
                 create_demo_hw4(function_hw4)
             with gr.TabItem("作业5：图像提亮工具"):
                 create_demo_hw5(function_hw5)
